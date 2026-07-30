@@ -750,6 +750,32 @@ class ChatTable:
             if removed:
                 await self.delete_orphan_tags_for_user(list(removed), user.id, db=session)
 
+    async def get_chat_meta_value_by_id(
+        self, id: str, key: str, db: AsyncSession | None = None
+    ) -> Any | None:
+        """Read a single value from a chat's meta column."""
+        async with get_async_db_context(db) as session:
+            result = await session.execute(select(Chat.meta).where(Chat.id == id))
+            meta = result.scalar_one_or_none()
+            if meta is None:
+                return None
+            return (meta or {}).get(key)
+
+    async def update_chat_meta_by_id(self, id: str, meta_updates: dict) -> None:
+        """Merge key-value pairs into a chat's meta column without
+        touching the chat blob. Used for Responses API stateful sessions
+        (previous_response_id persistence).
+
+        get_async_db() shields the whole session lifetime against request
+        cancellation, so no local shielding is needed here.
+        """
+        async with get_async_db_context() as session:
+            result = await session.execute(select(Chat.meta).where(Chat.id == id))
+            meta = result.scalar_one_or_none() or {}
+            meta.update(meta_updates)
+            await session.execute(update(Chat).where(Chat.id == id).values(meta=meta))
+            await session.commit()
+
     async def get_chat_title_by_id(self, id: str) -> str | None:
         async with get_async_db_context() as session:
             result = await session.execute(select(Chat.title).filter_by(id=id))

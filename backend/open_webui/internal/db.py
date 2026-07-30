@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
+import anyio
 from open_webui.env import (
     DATABASE_ENABLE_IAM_TOKEN_AUTH,
     DATABASE_ENABLE_SESSION_SHARING,
@@ -430,12 +431,22 @@ async def get_async_session():
 
 @asynccontextmanager
 async def get_async_db():
-    """Async context manager for use outside of FastAPI dependency injection."""
-    async with AsyncSessionLocal() as db:
-        try:
-            yield db
-        finally:
-            await db.close()
+    """Async context manager for use outside of FastAPI dependency injection.
+
+    Shielded end-to-end: Starlette/FastAPI deliver request cancellation
+    (client disconnect, stop button) via anyio cancel scopes. Without this,
+    a query or the final close() can be cut off mid-flight, which SQLAlchemy
+    surfaces as a pool invalidation error and can leak the underlying
+    aiosqlite connection until the garbage collector finds it later.
+    asyncio.shield() does not reliably guard against anyio's cancellation
+    delivery — anyio.CancelScope(shield=True) is the construct that does.
+    """
+    with anyio.CancelScope(shield=True):
+        async with AsyncSessionLocal() as db:
+            try:
+                yield db
+            finally:
+                await db.close()
 
 
 @asynccontextmanager

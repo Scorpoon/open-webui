@@ -2297,6 +2297,14 @@ async def process_chat_payload(request, form_data, user, metadata, model):
     chat_id = metadata.get('chat_id')
     user_message_id = metadata.get('user_message_id')
 
+    # Responses API stateful sessions: load previous_response_id from chat meta
+    # so subsequent turns anchor to the upstream server-side session instead of
+    # resending the full conversation history.
+    if ENABLE_RESPONSES_API_STATEFUL and is_saved_chat_id(chat_id):
+        prev_response_id = await Chats.get_chat_meta_value_by_id(chat_id, 'previous_response_id')
+        if prev_response_id:
+            form_data['previous_response_id'] = prev_response_id
+
     if is_saved_chat_id(chat_id) and user_message_id:
         db_messages = await load_messages_from_db(chat_id, user_message_id)
         if db_messages:
@@ -3692,6 +3700,16 @@ async def non_streaming_chat_response_handler(response, ctx):
                                 **({'usage': usage} if usage else {}),
                             },
                         )
+
+                    # Responses API stateful sessions: persist the response ID from
+                    # this turn into chat meta so the next turn can anchor to it.
+                    if ENABLE_RESPONSES_API_STATEFUL and save_to_chat:
+                        response_id = response_data.get('id')
+                        if response_id:
+                            await Chats.update_chat_meta_by_id(
+                                metadata['chat_id'],
+                                {'previous_response_id': response_id},
+                            )
 
                     await publish_chat_finished_event(request, user, metadata, title, content, response_output)
 
@@ -5534,6 +5552,14 @@ async def streaming_chat_response_handler(response, ctx):
                             metadata['message_id'],
                             {'done': True},
                         )
+
+                # Responses API stateful sessions: persist the response ID from
+                # this turn into chat meta so the next turn can anchor to it.
+                if ENABLE_RESPONSES_API_STATEFUL and last_response_id and is_saved_chat_id(metadata.get('chat_id')):
+                    await Chats.update_chat_meta_by_id(
+                        metadata['chat_id'],
+                        {'previous_response_id': last_response_id},
+                    )
 
                 await publish_chat_finished_event(request, user, metadata, title, ''.join(content_parts), output)
 
